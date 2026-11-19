@@ -10,7 +10,8 @@ public enum BookingStatus
 
 public class Booking
 {
-    public static readonly TimeSpan MaxDuration = TimeSpan.FromHours(4);
+    // R9: a participant can have at most 2 active bookings per UTC day (day of StartUtc).
+    public const int MaxActiveBookingsPerPersonPerDay = 2;
 
     // For persistence frameworks (EF Core).
     private Booking() { }
@@ -59,12 +60,17 @@ public class Booking
         if (startUtc < nowUtc)
             return Error.Validation("StartInPast", "A booking cannot start in the past.");
 
-        // R6: exactly 4 hours is allowed.
-        if (endUtc - startUtc > MaxDuration)
-            return Error.Validation("DurationTooLong", "A booking can last at most 4 hours.");
+        // R6 + R10: max 4 hours, or 2 hours for rooms with capacity > 10 (the limit itself is allowed).
+        var maxDuration = room.GetMaxBookingDuration();
+        if (endUtc - startUtc > maxDuration)
+            return Error.Validation(
+                "DurationTooLong", $"A booking in this room can last at most {maxDuration.TotalHours:0} hours.");
 
         return new Booking(Guid.NewGuid(), room.Id, bookedBy.Trim(), startUtc, endUtc, attendees);
     }
+
+    // R9: the "day" of a booking is the UTC date of StartUtc.
+    public DateOnly DayUtc => DateOnly.FromDateTime(StartUtc);
 
     // Dates without an offset are treated as UTC; dates with an offset are converted to UTC.
     private static DateTime AsUtc(DateTime value) => value.Kind switch

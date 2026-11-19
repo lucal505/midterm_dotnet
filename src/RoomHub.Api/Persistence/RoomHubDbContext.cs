@@ -41,7 +41,10 @@ public sealed class RoomHubDbContext(DbContextOptions<RoomHubDbContext> options)
                 .HasForeignKey(b => b.RoomId)
                 .OnDelete(DeleteBehavior.Cascade);
 
+            booking.Ignore(b => b.DayUtc);
+
             booking.HasIndex(b => new { b.RoomId, b.Status });
+            booking.HasIndex(b => new { b.BookedBy, b.Status, b.StartUtc });
         });
     }
 }

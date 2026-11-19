@@ -18,6 +18,14 @@ public class Room
     public string Name { get; private set; } = string.Empty;
     public int Capacity { get; private set; }
 
+    // R10: rooms with capacity > 10 allow at most 2 hours; the others keep the 4-hour limit (R6).
+    public const int LargeRoomCapacityThreshold = 10;
+    public static readonly TimeSpan LargeRoomMaxBookingDuration = TimeSpan.FromHours(2);
+    public static readonly TimeSpan DefaultMaxBookingDuration = TimeSpan.FromHours(4);
+
+    public TimeSpan GetMaxBookingDuration() =>
+        Capacity > LargeRoomCapacityThreshold ? LargeRoomMaxBookingDuration : DefaultMaxBookingDuration;
+
     public static Result<Room> Create(string? name, int capacity)
     {
         // R1: non-empty name, strictly positive capacity.

@@ -32,6 +32,14 @@ public sealed class CreateBookingHandler(
         if (activeBookings.Any(existing => existing.Overlaps(booking.StartUtc, booking.EndUtc)))
             return Error.Conflict("RoomOccupied", "The room is occupied in this interval.");
 
+        // R9: max 2 active bookings per participant per UTC day, across all rooms.
+        var activeThatDay = await bookings.CountActiveForPersonOnDayAsync(
+            booking.BookedBy, booking.DayUtc, cancellationToken);
+        if (activeThatDay >= Booking.MaxActiveBookingsPerPersonPerDay)
+            return Error.Conflict(
+                "DailyBookingLimitReached",
+                $"{booking.BookedBy} already has {Booking.MaxActiveBookingsPerPersonPerDay} active bookings on this day.");
+
         bookings.Add(booking);
         await unitOfWork.SaveChangesAsync(cancellationToken);
 
