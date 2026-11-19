@@ -1,0 +1,737 @@
+### RoomHub API: contract + business rules R1-R10
+# JetBrains HTTP Client (Rider). Start the app (dotnet run, port 5090), then
+# "Run All Requests in File". Each request has assertions: see the Tests tab.
+# Every run creates new rooms and new people (prefixed with a run id), so the file
+# can be run many times against the same SQLite database without R7/R9 collisions.
+# All dates are in 2030+, so R5 ("not in the past") never interferes.
+
+@baseUrl = http://localhost:5090
+
+############################################################################
+# ROOMS
+############################################################################
+
+### 1. Create room (capacity 5) -> 201 + Location + { id, name, capacity }
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "name": "Study room 1",
+  "capacity": 5
+}
+
+> {%
+    client.global.set("run", Date.now().toString(36));
+    client.global.set("roomId", response.body.id);
+    client.test("201 Created with Location and body", () => {
+        client.assert(response.status === 201, "expected 201, got " + response.status);
+        client.assert(response.headers.valueOf("Location") === "/api/rooms/" + response.body.id, "wrong Location");
+        client.assert(response.body.name === "Study room 1", "wrong name");
+        client.assert(response.body.capacity === 5, "wrong capacity");
+    });
+%}
+
+### 2. Create large room (capacity 11, R10: max 2h)
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "name": "Big hall",
+  "capacity": 11
+}
+
+> {%
+    client.global.set("bigRoomId", response.body.id);
+    client.test("201 Created", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 3. Create room with capacity exactly 10 (R10 boundary: keeps the 4h limit)
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "name": "Room ten",
+  "capacity": 10
+}
+
+> {%
+    client.global.set("tenRoomId", response.body.id);
+    client.test("201 Created", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 4. Get room -> 200 { id, name, capacity }
+GET {{baseUrl}}/api/rooms/{{roomId}}
+
+> {%
+    client.test("200 with room", () => {
+        client.assert(response.status === 200, "got " + response.status);
+        client.assert(response.body.id === client.global.get("roomId"), "wrong id");
+        client.assert(response.body.name === "Study room 1", "wrong name");
+        client.assert(response.body.capacity === 5, "wrong capacity");
+    });
+%}
+
+### 5. Get missing room -> 404 ProblemDetails
+GET {{baseUrl}}/api/rooms/00000000-0000-0000-0000-000000000001
+
+> {%
+    client.test("404 problem+json", () => {
+        client.assert(response.status === 404, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 6. Get room with a non-GUID id -> 404 ProblemDetails
+GET {{baseUrl}}/api/rooms/not-a-guid
+
+> {%
+    client.test("404 problem+json", () => {
+        client.assert(response.status === 404, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 7. R1: empty name -> 400
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "name": "",
+  "capacity": 10
+}
+
+> {%
+    client.test("400 problem+json", () => {
+        client.assert(response.status === 400, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 8. R1: whitespace-only name -> 400
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "name": "   ",
+  "capacity": 10
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 9. R1: missing name -> 400
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "capacity": 10
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 10. R1: capacity 0 -> 400
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "name": "Zero",
+  "capacity": 0
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 11. R1: negative capacity -> 400
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{
+  "name": "Negative",
+  "capacity": -3
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 12. Malformed JSON -> 400 ProblemDetails
+POST {{baseUrl}}/api/rooms
+Content-Type: application/json
+
+{ "name": "broken",
+
+> {%
+    client.test("400 problem+json", () => {
+        client.assert(response.status === 400, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+############################################################################
+# BOOKINGS: create / get
+############################################################################
+
+### 13. Create booking 10:00-12:00 -> 201 + Location + { id, roomId, status }
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-ana",
+  "startUtc": "2030-01-10T10:00:00Z",
+  "endUtc": "2030-01-10T12:00:00Z",
+  "attendees": 4
+}
+
+> {%
+    client.global.set("bookingId", response.body.id);
+    client.test("201 Created with Location and body", () => {
+        client.assert(response.status === 201, "got " + response.status);
+        client.assert(response.headers.valueOf("Location") === "/api/bookings/" + response.body.id, "wrong Location");
+        client.assert(response.body.roomId === client.global.get("roomId"), "wrong roomId");
+        client.assert(response.body.status === "Active", "status should be Active");
+    });
+%}
+
+### 14. Get booking -> 200 with all fields, UTC dates, status as text
+GET {{baseUrl}}/api/bookings/{{bookingId}}
+
+> {%
+    client.test("200 with booking", () => {
+        client.assert(response.status === 200, "got " + response.status);
+        const b = response.body;
+        client.assert(b.id === client.global.get("bookingId"), "wrong id");
+        client.assert(b.roomId === client.global.get("roomId"), "wrong roomId");
+        client.assert(b.bookedBy === client.global.get("run") + "-ana", "wrong bookedBy");
+        client.assert(b.startUtc === "2030-01-10T10:00:00Z", "wrong startUtc: " + b.startUtc);
+        client.assert(b.endUtc === "2030-01-10T12:00:00Z", "wrong endUtc: " + b.endUtc);
+        client.assert(b.attendees === 4, "wrong attendees");
+        client.assert(b.status === "Active", "wrong status");
+    });
+%}
+
+### 15. Get missing booking -> 404 ProblemDetails
+GET {{baseUrl}}/api/bookings/00000000-0000-0000-0000-000000000001
+
+> {%
+    client.test("404 problem+json", () => {
+        client.assert(response.status === 404, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 16. Booking in a missing room with an invalid body -> 404 (before any validation)
+POST {{baseUrl}}/api/rooms/00000000-0000-0000-0000-000000000001/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "",
+  "startUtc": "2020-01-10T12:00:00Z",
+  "endUtc": "2020-01-10T10:00:00Z",
+  "attendees": 0
+}
+
+> {%
+    client.test("404 before validation", () => client.assert(response.status === 404, "got " + response.status));
+%}
+
+############################################################################
+# VALIDATION R2-R6, R10 (400)
+############################################################################
+
+### 17. R2: empty bookedBy -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "",
+  "startUtc": "2030-01-11T10:00:00Z",
+  "endUtc": "2030-01-11T11:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("400 problem+json", () => {
+        client.assert(response.status === 400, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 18. R2: missing bookedBy -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "startUtc": "2030-01-11T10:00:00Z",
+  "endUtc": "2030-01-11T11:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 19. R3: end equal to start -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-val",
+  "startUtc": "2030-01-11T10:00:00Z",
+  "endUtc": "2030-01-11T10:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 20. R3: end before start -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-val",
+  "startUtc": "2030-01-11T11:00:00Z",
+  "endUtc": "2030-01-11T10:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 21. R4: attendees 0 -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-val",
+  "startUtc": "2030-01-11T10:00:00Z",
+  "endUtc": "2030-01-11T11:00:00Z",
+  "attendees": 0
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 22. R4: negative attendees -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-val",
+  "startUtc": "2030-01-11T10:00:00Z",
+  "endUtc": "2030-01-11T11:00:00Z",
+  "attendees": -1
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 23. R4: attendees above capacity (6 > 5) -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-val",
+  "startUtc": "2030-01-11T10:00:00Z",
+  "endUtc": "2030-01-11T11:00:00Z",
+  "attendees": 6
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 24. R4: attendees exactly at capacity (5) -> 201
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-cap",
+  "startUtc": "2030-01-12T10:00:00Z",
+  "endUtc": "2030-01-12T11:00:00Z",
+  "attendees": 5
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 25. R5: start in the past -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-val",
+  "startUtc": "2020-01-11T10:00:00Z",
+  "endUtc": "2020-01-11T11:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 26. R6: exactly 4 hours (room capacity 5) -> 201
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r6",
+  "startUtc": "2030-01-13T10:00:00Z",
+  "endUtc": "2030-01-13T14:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 27. R6: 4 hours and 1 minute -> 400
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r6",
+  "startUtc": "2030-01-14T10:00:00Z",
+  "endUtc": "2030-01-14T14:01:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 28. R10: large room (capacity 11), exactly 2 hours -> 201
+POST {{baseUrl}}/api/rooms/{{bigRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r10",
+  "startUtc": "2030-01-15T10:00:00Z",
+  "endUtc": "2030-01-15T12:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 29. R10: large room, 2 hours and 1 minute -> 400
+POST {{baseUrl}}/api/rooms/{{bigRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r10",
+  "startUtc": "2030-01-16T10:00:00Z",
+  "endUtc": "2030-01-16T12:01:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("400", () => client.assert(response.status === 400, "got " + response.status));
+%}
+
+### 30. R10: room with capacity exactly 10 keeps the 4h limit -> 201
+POST {{baseUrl}}/api/rooms/{{tenRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r10b",
+  "startUtc": "2030-01-17T10:00:00Z",
+  "endUtc": "2030-01-17T14:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+############################################################################
+# R7: overlap (409), touching intervals are allowed
+# Existing booking from request 13: room 1, 2030-01-10 10:00-12:00
+############################################################################
+
+### 31. R7: partial overlap 11:00-13:00 -> 409
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r7a",
+  "startUtc": "2030-01-10T11:00:00Z",
+  "endUtc": "2030-01-10T13:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("409 problem+json", () => {
+        client.assert(response.status === 409, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 32. R7: interval inside the existing one 10:30-11:30 -> 409
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r7a",
+  "startUtc": "2030-01-10T10:30:00Z",
+  "endUtc": "2030-01-10T11:30:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("409", () => client.assert(response.status === 409, "got " + response.status));
+%}
+
+### 33. R7: same room, different day -> 201 (no overlap)
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r7a",
+  "startUtc": "2030-01-18T10:00:00Z",
+  "endUtc": "2030-01-18T12:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 34. R7: touching after (12:00-13:00) -> 201
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r7b",
+  "startUtc": "2030-01-10T12:00:00Z",
+  "endUtc": "2030-01-10T13:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201 (touching is not overlapping)", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 35. R7: touching before (09:00-10:00) -> 201
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-r7c",
+  "startUtc": "2030-01-10T09:00:00Z",
+  "endUtc": "2030-01-10T10:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201 (touching is not overlapping)", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+############################################################################
+# R8: cancel
+############################################################################
+
+### 36. R8: cancel the booking from request 13 -> 204
+POST {{baseUrl}}/api/bookings/{{bookingId}}/cancel
+
+> {%
+    client.test("204", () => client.assert(response.status === 204, "got " + response.status));
+%}
+
+### 37. R8: booking is now Cancelled
+GET {{baseUrl}}/api/bookings/{{bookingId}}
+
+> {%
+    client.test("status Cancelled", () => {
+        client.assert(response.status === 200, "got " + response.status);
+        client.assert(response.body.status === "Cancelled", "got " + response.body.status);
+    });
+%}
+
+### 38. R8: cancel again -> 409
+POST {{baseUrl}}/api/bookings/{{bookingId}}/cancel
+
+> {%
+    client.test("409 problem+json", () => {
+        client.assert(response.status === 409, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 39. R8: cancel a missing booking -> 404
+POST {{baseUrl}}/api/bookings/00000000-0000-0000-0000-000000000001/cancel
+
+> {%
+    client.test("404", () => client.assert(response.status === 404, "got " + response.status));
+%}
+
+### 40. R8 + R7: the cancelled interval 10:00-12:00 is free again -> 201
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-bob",
+  "startUtc": "2030-01-10T10:00:00Z",
+  "endUtc": "2030-01-10T12:00:00Z",
+  "attendees": 2
+}
+
+> {%
+    client.test("201 (cancelled booking frees its interval)", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+############################################################################
+# R9: max 2 active bookings per person per UTC day, across all rooms
+# Person: {{run}}-dana, day 2030-02-01
+############################################################################
+
+### 41. R9: dana #1 (room 1) -> 201
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-dana",
+  "startUtc": "2030-02-01T08:00:00Z",
+  "endUtc": "2030-02-01T09:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.global.set("danaFirstId", response.body.id);
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 42. R9: dana #2 same day, other room -> 201
+POST {{baseUrl}}/api/rooms/{{tenRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-dana",
+  "startUtc": "2030-02-01T10:00:00Z",
+  "endUtc": "2030-02-01T11:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 43. R9: dana #3 same day, third room -> 409
+POST {{baseUrl}}/api/rooms/{{bigRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-dana",
+  "startUtc": "2030-02-01T23:00:00Z",
+  "endUtc": "2030-02-01T23:30:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("409 problem+json", () => {
+        client.assert(response.status === 409, "got " + response.status);
+        client.assert(response.contentType.mimeType === "application/problem+json", "not problem+json");
+    });
+%}
+
+### 44. R9: day is the UTC date of startUtc (01:00+02:00 on 02-02 = 23:00Z on 02-01) -> 409
+POST {{baseUrl}}/api/rooms/{{bigRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-dana",
+  "startUtc": "2030-02-02T01:00:00+02:00",
+  "endUtc": "2030-02-02T01:30:00+02:00",
+  "attendees": 1
+}
+
+> {%
+    client.test("409", () => client.assert(response.status === 409, "got " + response.status));
+%}
+
+### 45. R9: dana on the next day -> 201 (days do not affect each other)
+POST {{baseUrl}}/api/rooms/{{bigRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-dana",
+  "startUtc": "2030-02-02T00:00:00Z",
+  "endUtc": "2030-02-02T01:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 46. R9: another person on the same day -> 201 (limit is per person)
+POST {{baseUrl}}/api/rooms/{{bigRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-eve",
+  "startUtc": "2030-02-01T12:00:00Z",
+  "endUtc": "2030-02-01T13:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 47. R9: cancel dana #1 -> 204
+POST {{baseUrl}}/api/bookings/{{danaFirstId}}/cancel
+
+> {%
+    client.test("204", () => client.assert(response.status === 204, "got " + response.status));
+%}
+
+### 48. R9: dana #3 again after the cancel -> 201 (cancelled bookings do not count)
+POST {{baseUrl}}/api/rooms/{{bigRoomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-dana",
+  "startUtc": "2030-02-01T15:00:00Z",
+  "endUtc": "2030-02-01T16:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("201", () => client.assert(response.status === 201, "got " + response.status));
+%}
+
+### 49. R9: dana #4 the same day -> 409
+POST {{baseUrl}}/api/rooms/{{roomId}}/bookings
+Content-Type: application/json
+
+{
+  "bookedBy": "{{run}}-dana",
+  "startUtc": "2030-02-01T18:00:00Z",
+  "endUtc": "2030-02-01T19:00:00Z",
+  "attendees": 1
+}
+
+> {%
+    client.test("409", () => client.assert(response.status === 409, "got " + response.status));
+%}
+
+### 50. Persistence: after restarting the app, re-run only this request (it uses the saved bookingId) -> 200
+GET {{baseUrl}}/api/bookings/{{bookingId}}
+
+> {%
+    client.test("booking still exists after restart", () => {
+        client.assert(response.status === 200, "got " + response.status);
+        client.assert(response.body.status === "Cancelled", "got " + response.body.status);
+    });
+%}
