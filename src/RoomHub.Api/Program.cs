@@ -11,16 +11,21 @@ var builder = WebApplication.CreateBuilder(args);
 // Errors produced by the framework (bad JSON, unknown route) are also ProblemDetails.
 builder.Services.AddProblemDetails();
 
+// "Now" for the business rules (R5). Never DateTime.UtcNow.
+builder.Services.AddSingleton(TimeProvider.System);
+
 // Persistence (in-memory for now).
 builder.Services.AddSingleton<RoomRepository>();
 builder.Services.AddSingleton<BookingRepository>();
 
-// Feature handlers (one per slice).
-builder.Services.AddScoped<CreateRoomHandler>();
-builder.Services.AddScoped<GetRoomHandler>();
-builder.Services.AddScoped<CreateBookingHandler>();
-builder.Services.AddScoped<GetBookingHandler>();
-builder.Services.AddScoped<CancelBookingHandler>();
+// Commands (write side).
+builder.Services.AddScoped<ICommandHandler<CreateRoomCommand, CreateRoomResponse>, CreateRoomHandler>();
+builder.Services.AddScoped<ICommandHandler<CreateBookingCommand, CreateBookingResponse>, CreateBookingHandler>();
+builder.Services.AddScoped<ICommandHandler<CancelBookingCommand, CancelBookingResponse>, CancelBookingHandler>();
+
+// Queries (read side).
+builder.Services.AddScoped<IQueryHandler<GetRoomQuery, GetRoomResponse>, GetRoomHandler>();
+builder.Services.AddScoped<IQueryHandler<GetBookingQuery, GetBookingResponse>, GetBookingHandler>();
 
 var app = builder.Build();
 
