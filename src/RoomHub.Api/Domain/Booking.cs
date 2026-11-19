@@ -74,13 +74,17 @@ public class Booking
         _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
     };
 
-    // R7: starter overlap logic (touching intervals + active-only are fixed at level C).
+    // R7: only active bookings block an interval; touching intervals
+    // (one ends exactly when the other starts) do not overlap.
     public bool Overlaps(DateTime startUtc, DateTime endUtc) =>
-        StartUtc <= endUtc && startUtc <= EndUtc;
+        Status == BookingStatus.Active && StartUtc < endUtc && startUtc < EndUtc;
 
-    // R8: already-cancelled -> 409 is fixed at level C.
+    // R8: Active -> Cancelled; cancelling twice is a conflict.
     public Result Cancel()
     {
+        if (Status == BookingStatus.Cancelled)
+            return Error.Conflict("BookingAlreadyCancelled", "The booking is already cancelled.");
+
         Status = BookingStatus.Cancelled;
         return Result.Success();
     }

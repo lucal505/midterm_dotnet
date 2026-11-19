@@ -1,34 +1,17 @@
+using Microsoft.EntityFrameworkCore;
 using RoomHub.Api.Domain;
 
 namespace RoomHub.Api.Persistence;
 
-// Starter: in-memory data. It is lost when the application restarts.
-public class BookingRepository
+public sealed class BookingRepository(RoomHubDbContext db) : IBookingRepository
 {
-    private readonly List<Booking> _bookings = new();
-    private readonly object _lock = new();
+    public async Task<Booking?> GetByIdAsync(Guid id, CancellationToken cancellationToken) =>
+        await db.Bookings.FindAsync([id], cancellationToken);
 
-    public void Add(Booking booking)
-    {
-        lock (_lock)
-        {
-            _bookings.Add(booking);
-        }
-    }
+    public async Task<IReadOnlyList<Booking>> ListActiveForRoomAsync(Guid roomId, CancellationToken cancellationToken) =>
+        await db.Bookings
+            .Where(b => b.RoomId == roomId && b.Status == BookingStatus.Active)
+            .ToListAsync(cancellationToken);
 
-    public Booking? Get(Guid id)
-    {
-        lock (_lock)
-        {
-            return _bookings.FirstOrDefault(b => b.Id == id);
-        }
-    }
-
-    public List<Booking> ListForRoom(Guid roomId)
-    {
-        lock (_lock)
-        {
-            return _bookings.Where(b => b.RoomId == roomId).ToList();
-        }
-    }
+    public void Add(Booking booking) => db.Bookings.Add(booking);
 }

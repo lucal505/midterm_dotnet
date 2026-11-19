@@ -1,23 +1,20 @@
 using RoomHub.Api.Common;
 using RoomHub.Api.Domain;
-using RoomHub.Api.Persistence;
 
 namespace RoomHub.Api.Features.CreateBooking;
 
 public sealed class CreateBookingHandler(
-    RoomRepository rooms,
-    BookingRepository bookings,
+    IRoomRepository rooms,
+    IBookingRepository bookings,
+    IUnitOfWork unitOfWork,
     TimeProvider timeProvider)
     : ICommandHandler<CreateBookingCommand, CreateBookingResponse>
 {
-    public Task<Result<CreateBookingResponse>> Handle(
-        CreateBookingCommand command, CancellationToken cancellationToken) =>
-        Task.FromResult(Execute(command));
-
-    private Result<CreateBookingResponse> Execute(CreateBookingCommand command)
+    public async Task<Result<CreateBookingResponse>> Handle(
+        CreateBookingCommand command, CancellationToken cancellationToken)
     {
         // Contract: 404 for a missing room comes before any validation.
-        var room = rooms.Get(command.RoomId);
+        var room = await rooms.GetByIdAsync(command.RoomId, cancellationToken);
         if (room is null)
             return Error.NotFound("RoomNotFound", "The room does not exist.");
 
@@ -30,11 +27,14 @@ public sealed class CreateBookingHandler(
 
         var booking = bookingResult.Value;
 
-        // R7
-        if (bookings.ListForRoom(room.Id).Any(existing => existing.Overlaps(booking.StartUtc, booking.EndUtc)))
+        // R7: only active bookings of this room can conflict; the overlap rule is in Booking.Overlaps.
+        var activeBookings = await bookings.ListActiveForRoomAsync(room.Id, cancellationToken);
+        if (activeBookings.Any(existing => existing.Overlaps(booking.StartUtc, booking.EndUtc)))
             return Error.Conflict("RoomOccupied", "The room is occupied in this interval.");
 
         bookings.Add(booking);
+        await unitOfWork.SaveChangesAsync(cancellationToken);
+
         return new CreateBookingResponse(booking.Id, booking.RoomId, booking.Status.ToString());
     }
 }
